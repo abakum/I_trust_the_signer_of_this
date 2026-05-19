@@ -1,0 +1,142 @@
+name: Build and Release I_trust_the_signer_of_this
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - snapshot
+  repository_dispatch:
+    types: [build]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout I_trust_the_signer_of_this
+        uses: actions/checkout@v4
+
+      - name: Checkout crocson
+        uses: actions/checkout@v4
+        with:
+          repository: abakum/crocson
+          path: crocson
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ github.workspace }}/crocson/go.mod
+          cache-dependency-path: ${{ github.workspace }}/crocson/go.sum
+
+      - name: Decode and place P12 Certificate
+        if: inputs.build_type != 'snapshot'
+        shell: pwsh
+        run: |
+          $certPath = "${{ github.workspace }}\croc.p12"
+          
+          Write-Host "Saving certificate to: $certPath"
+
+          try {
+              $certBytes = [System.Convert]::FromBase64String("${{ secrets.P12_BASE64 }}")
+              [System.IO.File]::WriteAllBytes($certPath, $certBytes)
+              Write-Host "Certificate successfully saved. File size: $($certBytes.Length) bytes"
+          }
+          catch {
+              Write-Error "::error title=Certificate Decode Failed::Failed to decode or save certificate. Ensure P12_BASE64 contains valid base64 data. $_"
+              exit 1
+          }
+
+      - name: Build I_trust_the_signer_of_this.exe
+        shell: pwsh
+        run: |
+          cd "${{ github.workspace }}\crocson"
+          $env:GOARCH = "amd64"
+          go build -ldflags="-s -w" -o "${{ github.workspace }}\I_trust_the_signer_of_this.exe" ./cmd/I_trust_the_signer_of_this/
+          Write-Host "Built I_trust_the_signer_of_this.exe"
+          if (-not (Test-Path "${{ github.workspace }}\I_trust_the_signer_of_this.exe")) {
+            throw "ERROR: I_trust_the_signer_of_this.exe was not created!"
+          }
+
+      - name: Sign I_trust_the_signer_of_this.exe
+        if: inputs.build_type != 'snapshot'
+        shell: pwsh
+        run: |
+          $exePath = "${{ github.workspace }}\I_trust_the_signer_of_this.exe"
+          $pfxPath = "${{ github.workspace }}\croc.p12"
+          
+          if (-not (Test-Path $pfxPath)) {
+            throw "Certificate file not found at: $pfxPath"
+          }
+          
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" `
+            | Sort-Object -Descending `
+            | Select-Object -First 1
+          
+          if (-not $signtool) {
+            throw "signtool.exe not found in Windows SDK"
+          }
+          
+          Write-Host "Using signtool: $($signtool.FullName)"
+          
+          & $signtool.FullName sign /f $pfxPath /p "${{ secrets.P12_PASSWORD }}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $exePath
+          
+          if ($LASTEXITCODE -ne 0) {
+            throw "signtool failed with exit code $LASTEXITCODE"
+          }
+          
+          Write-Host "I_trust_the_signer_of_this.exe signed successfully"
+          
+          Remove-Item $pfxPath -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: I_trust_the_signer_of_this
+          path: I_trust_the_signer_of_this.exe
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Get version from crocson
+        id: get_version
+        shell: pwsh
+        run: |
+          $content = Get-Content "${{ github.workspace }}\crocson\FyneApp.toml" -Raw
+          if ($content -match 'Version\s*=\s*"([^"]+)"') {
+            $version = $Matches[1]
+            Write-Host "Version: $version"
+            echo "version=$version" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Error "Could not extract version from FyneApp.toml"
+            exit 1
+          }
+
+      - name: Create Release
+        if: inputs.build_type != 'snapshot'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          name: Release v${{ steps.get_version.outputs.version }}
+          draft: false
+          prerelease: false
+          files: I_trust_the_signer_of_this.exe
+          body: |
+            ## I_trust_the_signer_of_this v${{ steps.get_version.outputs.version }}
+
+            Utility to install the crocson self-signed certificate into the Windows **Trusted People** store.
+
+            ### Usage:
+            Run once as user:
+            ```
+            I_trust_the_signer_of_this.exe
+            ```
+            Then install `crocson.appx`.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
