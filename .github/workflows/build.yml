@@ -97,7 +97,17 @@ jobs:
           
           Write-Host "Using signtool: $($signtool.FullName)"
           
-          & $signtool.FullName sign /f $pfxPath /p "${{ secrets.P12_PASSWORD }}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $exePath
+          # Import PFX into the current user store first; signtool's own
+          # PFX import fails on runners with Store::ImportCertObject() failed
+          $certPass = ConvertTo-SecureString -String "${{ secrets.P12_PASSWORD }}" -Force -AsPlainText
+          Import-PfxCertificate -FilePath $pfxPath -Password $certPass -CertStoreLocation Cert:\CurrentUser\My | Out-Null
+          $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.HasPrivateKey } | Sort-Object NotAfter -Descending | Select-Object -First 1
+          if (-not $cert) {
+            throw "Certificate with private key not found in Cert:\CurrentUser\My"
+          }
+          Write-Host "Signing with certificate: $($cert.Subject) ($($cert.Thumbprint))"
+          
+          & $signtool.FullName sign /sha1 $cert.Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $exePath
           
           if ($LASTEXITCODE -ne 0) {
             throw "signtool failed with exit code $LASTEXITCODE"
@@ -106,6 +116,7 @@ jobs:
           Write-Host "I_trust_the_signer_of_this.exe signed successfully"
           
           Remove-Item $pfxPath -Force
+          Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
