@@ -99,7 +99,12 @@ jobs:
           
           # Import PFX into the current user store first; signtool's own
           # PFX import fails on runners with Store::ImportCertObject() failed
-          $certPass = ConvertTo-SecureString -String "${{ secrets.P12_PASSWORD }}" -Force -AsPlainText
+          $p12Pass = "${{ secrets.P12_PASSWORD }}"
+          if ($p12Pass) {
+            $certPass = ConvertTo-SecureString -String $p12Pass -Force -AsPlainText
+          } else {
+            $certPass = [System.Security.SecureString]::new()
+          }
           Import-PfxCertificate -FilePath $pfxPath -Password $certPass -CertStoreLocation Cert:\CurrentUser\My | Out-Null
           $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.HasPrivateKey } | Sort-Object NotAfter -Descending | Select-Object -First 1
           if (-not $cert) {
