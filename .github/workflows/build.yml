@@ -64,7 +64,7 @@ jobs:
           { "ManifestPath": "$($manifestPath -replace '\\', '/')" }
           "@ | Set-Content $jsonPath
           cd "${{ github.workspace }}\crocson"
-          go tool github.com/josephspurrier/goversioninfo/cmd/goversioninfo -o cmd/I_trust_the_signer_of_this/resource_windows_amd64.syso $jsonPath
+          go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0 -o cmd/I_trust_the_signer_of_this/resource_windows_amd64.syso $jsonPath
           if (-not (Test-Path "cmd\I_trust_the_signer_of_this\resource_windows_amd64.syso")) {
             throw "ERROR: syso was not created!"
           }
